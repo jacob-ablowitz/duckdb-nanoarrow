@@ -32,7 +32,18 @@ struct ArrowWriteBindData : public TableFunctionData {
   bool size_metadata = false;
   idx_t row_group_size = 122880;
   string type_metadata_namespace;
+  string list_child_name;
 };
+
+void SetListChildName(ArrowSchema& schema, const string& name) {
+  const string format = schema.format;
+  if (format == "+l" || format == "+L" || StringUtil::StartsWith(format, "+w:")) {
+    NANOARROW_THROW_NOT_OK(ArrowSchemaSetName(schema.children[0], name.c_str()));
+  }
+  for (int64_t i = 0; i < schema.n_children; i++) {
+    SetListChildName(*schema.children[i], name);
+  }
+}
 
 struct ArrowWriteGlobalState : public GlobalFunctionData {
   unique_ptr<ArrowStreamWriter> writer;
@@ -128,6 +139,17 @@ unique_ptr<FunctionData> ArrowWriteBind(ClientContext& context,
           ReadMetadataPairs(option.second[0], "kv_metadata argument");
     } else if (loption == "field_metadata") {
       bind_data->field_metadata = ReadFieldMetadata(option.second[0], names);
+    } else if (loption == "list_child_name") {
+      if (option.second[0].IsNull()) {
+        throw BinderException("LIST_CHILD_NAME must not be NULL");
+      }
+      bind_data->list_child_name = option.second[0].ToString();
+      if (bind_data->list_child_name.empty()) {
+        throw BinderException("LIST_CHILD_NAME must not be empty");
+      }
+      if (bind_data->list_child_name.find('\0') != string::npos) {
+        throw BinderException("LIST_CHILD_NAME must not contain NUL bytes");
+      }
     } else if (loption == "type_metadata_namespace") {
       if (option.second[0].IsNull()) {
         throw BinderException("TYPE_METADATA_NAMESPACE must not be NULL");
@@ -164,6 +186,13 @@ unique_ptr<FunctionData> ArrowWriteBind(ClientContext& context,
     nanoarrow::UniqueSchema schema;
     NANOARROW_THROW_NOT_OK(ArrowSchemaDeepCopy(bind_data->schema.get(), schema.get()));
     ArrowStreamWriter::SetTypeMetadata(*schema.get(), sql_types, type_metadata_namespace);
+    bind_data->schema = std::move(schema);
+  }
+  if (!bind_data->list_child_name.empty()) {
+    // As above, the names change in a nanoarrow owned copy of DuckDB's schema
+    nanoarrow::UniqueSchema schema;
+    NANOARROW_THROW_NOT_OK(ArrowSchemaDeepCopy(bind_data->schema.get(), schema.get()));
+    SetListChildName(*schema.get(), bind_data->list_child_name);
     bind_data->schema = std::move(schema);
   }
 

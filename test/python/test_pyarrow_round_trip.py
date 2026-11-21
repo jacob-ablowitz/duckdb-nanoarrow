@@ -303,3 +303,33 @@ def test_pyarrow_reads_type_metadata_of_deep_types(connection, tmp_path, format_
     connection.execute(f"COPY type_source TO '{path}' (FORMAT {format_name}, TYPE_METADATA_NAMESPACE 'VENDOR')")
     reader = ipc.open_file(path) if format_name == "arrow" else ipc.open_stream(path)
     assert_same_table_with_type_metadata(connection, reader.read_all(), expected, "type_source")
+
+
+def list_child_names(arrow_type):
+    if pa.types.is_list(arrow_type) or pa.types.is_large_list(arrow_type) or pa.types.is_fixed_size_list(arrow_type):
+        yield arrow_type.value_field.name
+        yield from list_child_names(arrow_type.value_type)
+    elif pa.types.is_map(arrow_type):
+        yield from list_child_names(arrow_type.item_type)
+    elif pa.types.is_struct(arrow_type) or pa.types.is_union(arrow_type):
+        for i in range(arrow_type.num_fields):
+            yield from list_child_names(arrow_type.field(i).type)
+
+
+@pytest.mark.parametrize("format_name", ["arrow", "arrows"])
+@pytest.mark.parametrize("large", [False, True])
+def test_pyarrow_reads_list_child_name(connection, tmp_path, format_name, large):
+    connection.execute(f"SET arrow_large_buffer_size={str(large).lower()}")
+    path = tmp_path / f"list_child_name.{format_name}"
+    connection.execute(
+        "COPY (SELECT [i] AS l, [[i]] AS ll, [i, i]::INTEGER[2] AS f, {'x': [i]} AS s, MAP {i: [i]} AS m, "
+        "union_value(u := [i])::UNION(u INTEGER[], v VARCHAR) AS un "
+        f"FROM range(3) t(i)) TO '{path}' (FORMAT {format_name}, LIST_CHILD_NAME 'item')"
+    )
+    reader = ipc.open_file(path) if format_name == "arrow" else ipc.open_stream(path)
+    schema = reader.schema
+    assert pa.types.is_large_list(schema.field("l").type) == large
+    names = [name for field in schema for name in list_child_names(field.type)]
+    assert len(names) == 7
+    assert set(names) == {"item"}
+    assert reader.read_all().num_rows == 3

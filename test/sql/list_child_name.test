@@ -1,0 +1,65 @@
+# name: test/sql/list_child_name.test
+# description: COPY TO Arrow IPC names the child of every list with LIST_CHILD_NAME
+# group: [sql]
+
+require nanoarrow
+
+test-env DATA_PATH {TEST_DIR}
+
+# arrow_kv_metadata lists only fields with metadata, so TYPE_METADATA_NAMESPACE gives every
+# field some and makes the child names visible
+
+foreach large false true
+
+statement ok
+SET arrow_large_buffer_size = ${large}
+
+statement ok
+COPY (SELECT [1, 2] AS l, [[1], [2]] AS ll, [1, 2]::INTEGER[2] AS fixed, {'a': [1]} AS s, MAP {'k': [1]} AS m, union_value(u := [1])::UNION(u INTEGER[], v VARCHAR) AS un) TO '{DATA_PATH}/child_name_${large}.arrow' (FORMAT ARROW, LIST_CHILD_NAME 'item', TYPE_METADATA_NAMESPACE 'VENDOR')
+
+query I
+SELECT DISTINCT field_path FROM arrow_kv_metadata('{DATA_PATH}/child_name_${large}.arrow') ORDER BY field_path
+----
+[fixed]
+[fixed, item]
+[l]
+[l, item]
+[ll]
+[ll, item]
+[ll, item, item]
+[m]
+[m, entries, key]
+[m, entries, value]
+[m, entries, value, item]
+[s]
+[s, a]
+[s, a, item]
+[un]
+[un, u]
+[un, u, item]
+[un, v]
+
+query IIIIII
+FROM '{DATA_PATH}/child_name_${large}.arrow'
+----
+[1, 2]	[[1], [2]]	[1, 2]	{'a': [1]}	{k=[1]}	[1]
+
+endloop
+
+statement ok
+RESET arrow_large_buffer_size
+
+statement error
+COPY (SELECT [1] AS l) TO '{DATA_PATH}/child_name_error.arrow' (LIST_CHILD_NAME '')
+----
+LIST_CHILD_NAME must not be empty
+
+statement error
+COPY (SELECT [1] AS l) TO '{DATA_PATH}/child_name_error.arrow' (LIST_CHILD_NAME NULL)
+----
+LIST_CHILD_NAME must not be NULL
+
+statement error
+COPY (SELECT [1] AS l) TO '{DATA_PATH}/child_name_error.arrow' (LIST_CHILD_NAME 'a' || chr(0))
+----
+LIST_CHILD_NAME must not contain NUL bytes
