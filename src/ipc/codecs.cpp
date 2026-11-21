@@ -41,19 +41,25 @@ bool ArrowIpcCompressionOptions::TrySetOption(const string& name, const Value& v
 }
 
 void ArrowIpcCompressionOptions::Validate() const {
-  if (!level_set) {
+  if (type == NANOARROW_IPC_COMPRESSION_TYPE_NONE) {
+    if (level_set) {
+      throw BinderException(
+          "COMPRESSION_LEVEL requires COMPRESSION to be set to 'zstd' or 'lz4'");
+    }
     return;
   }
-  if (type == NANOARROW_IPC_COMPRESSION_TYPE_NONE) {
-    throw BinderException(
-        "COMPRESSION_LEVEL requires COMPRESSION to be set to 'zstd' or 'lz4'");
-  }
 
-  // nanoarrow checks the level too but only once the encoder exists, binding is earlier
+  // Checked at bind time, before any encoder exists. Without nanoarrow's codecs
+  // (NANOARROW_IPC_COMPRESSION=OFF) there is no range, and the encoder would fail later
+  // with an internal error that invalidates the database
   int min_level;
   int max_level;
-  NANOARROW_THROW_NOT_OK(ArrowIpcGetCompressionLevelRange(type, &min_level, &max_level));
-  if (level < min_level || level > max_level) {
+  if (ArrowIpcGetCompressionLevelRange(type, &min_level, &max_level) != NANOARROW_OK) {
+    throw NotImplementedException(
+        "Arrow IPC compression with %s is not available in this build",
+        ArrowIpcCompressionTypeToString(type));
+  }
+  if (level_set && (level < min_level || level > max_level)) {
     throw BinderException("Compression level for %s must be between %d and %d",
                           ArrowIpcCompressionTypeToString(type), min_level, max_level);
   }

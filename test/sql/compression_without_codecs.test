@@ -1,0 +1,29 @@
+# name: test/sql/compression_without_codecs.test
+# description: A build without nanoarrow's codecs (NANOARROW_IPC_COMPRESSION=OFF)
+# group: [sql]
+
+require nanoarrow
+
+# Set when the extension is built with NANOARROW_IPC_COMPRESSION=OFF
+require-env NANOARROW_IPC_COMPRESSION_OFF
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+CREATE TABLE t AS SELECT i FROM range(10) t(i)
+
+# A codec the build lacks fails at bind time and leaves the database usable
+statement error
+COPY t TO '{DATA_PATH}/t.arrows' (FORMAT ARROWS, COMPRESSION 'zstd')
+----
+Arrow IPC compression with zstd is not available in this build
+
+statement error
+COPY t TO '{DATA_PATH}/t.arrows' (FORMAT ARROWS, COMPRESSION 'lz4')
+----
+Arrow IPC compression with lz4 is not available in this build
+
+query I
+SELECT count(*) FROM t
+----
+10
