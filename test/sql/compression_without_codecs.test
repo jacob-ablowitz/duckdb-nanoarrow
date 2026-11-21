@@ -12,14 +12,27 @@ test-env DATA_PATH {TEST_DIR}
 statement ok
 CREATE TABLE t AS SELECT i FROM range(10) t(i)
 
-# A codec the build lacks fails at bind time and leaves the database usable
-statement error
-COPY t TO '{DATA_PATH}/t.arrows' (FORMAT ARROWS, COMPRESSION 'zstd')
+# zstd uses DuckDB's zstd, with its full range of levels
+foreach level -131072 -5 0 22
+
+statement ok
+COPY t TO '{DATA_PATH}/t_${level}.arrows' (FORMAT ARROWS, COMPRESSION 'zstd', COMPRESSION_LEVEL ${level})
+
+query II
+SELECT count(*), sum(i) FROM read_arrow('{DATA_PATH}/t_${level}.arrows')
 ----
-Arrow IPC compression with zstd is not available in this build
+10	45
+
+endloop
 
 statement error
-COPY t TO '{DATA_PATH}/t.arrows' (FORMAT ARROWS, COMPRESSION 'lz4')
+COPY t TO '{DATA_PATH}/t_error.arrows' (FORMAT ARROWS, COMPRESSION 'zstd', COMPRESSION_LEVEL 23)
+----
+Compression level for zstd must be between -131072 and 22
+
+# lz4 needs nanoarrow's codecs: it fails at bind time and leaves the database usable
+statement error
+COPY t TO '{DATA_PATH}/t_lz4.arrows' (FORMAT ARROWS, COMPRESSION 'lz4')
 ----
 Arrow IPC compression with lz4 is not available in this build
 

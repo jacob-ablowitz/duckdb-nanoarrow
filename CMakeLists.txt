@@ -12,8 +12,8 @@ fetchcontent_declare(nanoarrow
                      URL_HASH SHA256=a81178c68929c74e97cff6b02f9a9f77fc656966ad7dbc4ae858cb45496d6b6f
 )
 # nanoarrow compresses and decompresses itself with liblz4 and libzstd, from vcpkg in CI.
-# Builds without vcpkg, such as DuckDB-Wasm, can opt out of the codecs: compressed IPC
-# bodies are then rejected when read and never written
+# Builds without vcpkg, such as DuckDB-Wasm, can opt out of the codecs. zstd record batch
+# bodies then use DuckDB's bundled zstd (src/ipc/codecs.cpp); lz4 is not available
 option(NANOARROW_IPC_COMPRESSION "Read and write zstd and lz4 compressed IPC bodies" ON)
 if(NANOARROW_IPC_COMPRESSION)
   set(NANOARROW_IPC_WITH_ZSTD ON)

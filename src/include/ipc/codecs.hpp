@@ -28,7 +28,8 @@ struct ArrowIpcCompressionOptions {
   void Validate() const;
 };
 
-//! Creates an IPC decoder, nanoarrow decompresses zstd and lz4 bodies itself
+//! Creates an IPC decoder. Without nanoarrow's codecs, zstd record batch bodies are
+//! decompressed with DuckDB's zstd
 nanoarrow::ipc::UniqueDecoder NewDuckDBArrowDecoder();
 
 //! Makes an IPC encoder compress bodies, throws if this nanoarrow build lacks the codec
