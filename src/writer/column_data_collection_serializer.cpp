@@ -99,6 +99,14 @@ void ColumnDataCollectionSerializer::Init(const ArrowSchema* schema,
   SetArrowIpcEncoderCompression(*encoder.get(), compression);
   THROW_NOT_OK(InternalException, &error,
                ArrowArrayViewInitFromSchema(chunk_view.get(), schema, &error));
+  not_nullable.clear();
+  not_nullable_names.clear();
+  for (int64_t i = 0; i < schema->n_children; i++) {
+    if (!(schema->children[i]->flags & ARROW_FLAG_NULLABLE)) {
+      not_nullable.push_back(static_cast<idx_t>(i));
+      not_nullable_names.emplace_back(schema->children[i]->name);
+    }
+  }
 
   extension_types =
       ArrowTypeExtensionData::GetExtensionTypes(*options.client_context, logical_types);
@@ -172,6 +180,12 @@ idx_t ColumnDataCollectionSerializer::Serialize(ArrowAppender& appender) {
 
   THROW_NOT_OK(duckdb::InternalException, &error,
                ArrowArrayViewSetArray(chunk_view.get(), array.get(), &error));
+  for (idx_t i = 0; i < not_nullable.size(); i++) {
+    if (ArrowArrayViewComputeNullCount(chunk_view->children[not_nullable[i]]) != 0) {
+      throw ConstraintException("NOT_NULL column \"%s\" contains a NULL",
+                                not_nullable_names[i]);
+    }
+  }
   DropUnusedValidity(*chunk_view.get());
   if (track_body_size) {
     // Measured as written: uncompressed buffer sizes, the dropped bitmaps at size 0

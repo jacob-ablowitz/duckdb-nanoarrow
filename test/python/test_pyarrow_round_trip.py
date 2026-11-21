@@ -303,3 +303,21 @@ def test_pyarrow_reads_type_metadata_of_deep_types(connection, tmp_path, format_
     connection.execute(f"COPY type_source TO '{path}' (FORMAT {format_name}, TYPE_METADATA_NAMESPACE 'VENDOR')")
     reader = ipc.open_file(path) if format_name == "arrow" else ipc.open_stream(path)
     assert_same_table_with_type_metadata(connection, reader.read_all(), expected, "type_source")
+
+
+@pytest.mark.parametrize("format_name", ["arrow", "arrows"])
+def test_pyarrow_reads_not_null(connection, tmp_path, format_name):
+    path = tmp_path / f"not_null.{format_name}"
+    connection.execute(
+        "COPY (SELECT i AS a, i::VARCHAR AS b, {'x': NULL::INTEGER} AS s, [i] AS l, NULL::INTEGER AS n "
+        f"FROM range(3) t(i)) TO '{path}' (FORMAT {format_name}, NOT_NULL ('a', 's', 'l'))"
+    )
+    reader = ipc.open_file(path) if format_name == "arrow" else ipc.open_stream(path)
+    schema = reader.schema
+    assert {field.name: field.nullable for field in schema} == {
+        "a": False, "b": True, "s": False, "l": False, "n": True
+    }
+    # Only the top-level field is marked
+    assert schema.field("s").type.field(0).nullable
+    assert schema.field("l").type.value_field.nullable
+    assert reader.read_all().num_rows == 3

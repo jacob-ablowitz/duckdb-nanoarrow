@@ -1,6 +1,8 @@
 
 #include "write_arrow_stream.hpp"
 
+#include <algorithm>
+
 #include "duckdb/common/multi_file/multi_file_function.hpp"
 #include "file_scanner/arrow_multi_file_info.hpp"
 
@@ -32,7 +34,53 @@ struct ArrowWriteBindData : public TableFunctionData {
   bool size_metadata = false;
   idx_t row_group_size = 122880;
   string type_metadata_namespace;
+  vector<idx_t> not_null_columns;
 };
+
+// Reads NOT_NULL ('a', 'b'), NOT_NULL ['a', 'b'] or NOT_NULL 'a'
+vector<idx_t> ReadNotNullColumns(const vector<Value>& values,
+                                 const vector<Identifier>& names,
+                                 const vector<LogicalType>& sql_types) {
+  vector<idx_t> result;
+  auto add_column = [&](const Value& value) {
+    if (value.IsNull()) {
+      throw BinderException("NOT_NULL column names must not be NULL");
+    }
+    const auto column = value.ToString();
+    idx_t column_index = 0;
+    while (column_index < names.size() && names[column_index] != column) {
+      column_index++;
+    }
+    if (column_index == names.size()) {
+      throw BinderException("Column \"%s\" in NOT_NULL is not among the written columns",
+                            column);
+    }
+    if (std::find(result.begin(), result.end(), column_index) != result.end()) {
+      throw BinderException("Column \"%s\" is named more than once in NOT_NULL", column);
+    }
+    // An Arrow union has no validity bitmap, a NULL is a NULL member value. A NULL
+    // column holds nothing but NULLs
+    const auto type = sql_types[column_index].id();
+    if (type == LogicalTypeId::UNION || type == LogicalTypeId::SQLNULL) {
+      throw BinderException("NOT_NULL does not support column \"%s\" of type %s", column,
+                            sql_types[column_index].ToString());
+    }
+    result.push_back(column_index);
+  };
+  for (const auto& value : values) {
+    if (!value.IsNull() && value.type().id() == LogicalTypeId::LIST) {
+      for (const auto& child : ListValue::GetChildren(value)) {
+        add_column(child);
+      }
+    } else {
+      add_column(value);
+    }
+  }
+  if (result.empty()) {
+    throw BinderException("NOT_NULL requires at least one column name");
+  }
+  return result;
+}
 
 struct ArrowWriteGlobalState : public GlobalFunctionData {
   unique_ptr<ArrowStreamWriter> writer;
@@ -113,6 +161,10 @@ unique_ptr<FunctionData> ArrowWriteBind(ClientContext& context,
           BooleanValue::Get(option.second[0].DefaultCastAs(LogicalType::BOOLEAN));
       continue;
     }
+    if (loption == "not_null") {
+      bind_data->not_null_columns = ReadNotNullColumns(option.second, names, sql_types);
+      continue;
+    }
     if (option.second.size() != 1) {
       throw BinderException("%s requires exactly one argument",
                             StringUtil::Upper(loption));
@@ -164,6 +216,16 @@ unique_ptr<FunctionData> ArrowWriteBind(ClientContext& context,
     nanoarrow::UniqueSchema schema;
     NANOARROW_THROW_NOT_OK(ArrowSchemaDeepCopy(bind_data->schema.get(), schema.get()));
     ArrowStreamWriter::SetTypeMetadata(*schema.get(), sql_types, type_metadata_namespace);
+    bind_data->schema = std::move(schema);
+  }
+  if (!bind_data->not_null_columns.empty()) {
+    // As above, the flags change in a nanoarrow owned copy of DuckDB's schema. The
+    // serializer fails a batch with a NULL in a field that is not nullable
+    nanoarrow::UniqueSchema schema;
+    NANOARROW_THROW_NOT_OK(ArrowSchemaDeepCopy(bind_data->schema.get(), schema.get()));
+    for (auto column : bind_data->not_null_columns) {
+      schema->children[column]->flags &= ~ARROW_FLAG_NULLABLE;
+    }
     bind_data->schema = std::move(schema);
   }
 

@@ -58,6 +58,9 @@ class ColumnDataCollectionSerializer {
   Allocator& allocator;
   ArrowIpcCompressionOptions compression;
   bool track_body_size;
+  //! The top-level fields the schema marks as not nullable
+  vector<idx_t> not_nullable;
+  vector<string> not_nullable_names;
   ArrowBatchMeasure batch_measure{};
   unordered_map<idx_t, const shared_ptr<ArrowTypeExtensionData>> extension_types;
   nanoarrow::ipc::UniqueEncoder encoder;

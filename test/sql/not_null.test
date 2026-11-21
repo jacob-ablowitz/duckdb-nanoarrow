@@ -1,0 +1,82 @@
+# name: test/sql/not_null.test
+# description: COPY TO Arrow IPC writes the NOT_NULL columns as not nullable fields
+# group: [sql]
+
+require nanoarrow
+
+test-env DATA_PATH {TEST_DIR}
+
+# SQL cannot see the nullable flag: test_pyarrow_round_trip.py checks it. Here, a column
+# without NULLs is accepted and one with a NULL fails the COPY.
+statement ok
+COPY (SELECT i AS a, i::VARCHAR AS b, NULL::INTEGER AS c FROM range(3) t(i)) TO '{DATA_PATH}/not_null.arrows' (FORMAT ARROWS, NOT_NULL ('a', 'b'))
+
+query III
+FROM '{DATA_PATH}/not_null.arrows'
+----
+0	0	NULL
+1	1	NULL
+2	2	NULL
+
+statement ok
+COPY (SELECT 1 AS a, 2 AS b) TO '{DATA_PATH}/not_null_forms.arrow' (NOT_NULL 'a')
+
+statement ok
+COPY (SELECT 1 AS a, 2 AS b) TO '{DATA_PATH}/not_null_forms.arrow' (NOT_NULL ['a', 'b'])
+
+# Only the top-level field is marked: values nested in it may be NULL
+statement ok
+COPY (SELECT {'x': NULL::INTEGER} AS s, [NULL::INTEGER] AS l) TO '{DATA_PATH}/not_null_nested.arrow' (NOT_NULL ('s', 'l'))
+
+statement error
+COPY (SELECT NULL AS n) TO '{DATA_PATH}/not_null_error.arrow' (NOT_NULL ('n'))
+----
+NOT_NULL does not support column "n"
+
+statement error
+COPY (SELECT 1 AS a) TO '{DATA_PATH}/not_null_error.arrow' (NOT_NULL ('b'))
+----
+Column "b" in NOT_NULL is not among the written columns
+
+statement error
+COPY (SELECT 1 AS a) TO '{DATA_PATH}/not_null_error.arrow' (NOT_NULL ('a', 'a'))
+----
+Column "a" is named more than once in NOT_NULL
+
+statement error
+COPY (SELECT 1 AS a) TO '{DATA_PATH}/not_null_error.arrow' (NOT_NULL (NULL))
+----
+NOT_NULL column names must not be NULL
+
+statement error
+COPY (SELECT 1 AS a) TO '{DATA_PATH}/not_null_error.arrow' (NOT_NULL [])
+----
+NOT_NULL requires at least one column name
+
+# An Arrow union has no validity bitmap to mark
+statement error
+COPY (SELECT union_value(u := 1)::UNION(u INTEGER, v VARCHAR) AS un) TO '{DATA_PATH}/not_null_error.arrow' (NOT_NULL ('un'))
+----
+NOT_NULL does not support column "un"
+
+# A NULL in any record batch fails the COPY. Written to a temporary file first, the
+# output is then removed
+foreach order true false
+
+statement ok
+SET preserve_insertion_order = ${order}
+
+statement error
+COPY (SELECT CASE WHEN i = 5000 THEN NULL ELSE i END AS a FROM range(10000) t(i)) TO '{DATA_PATH}/not_null_null_${order}.arrow' (NOT_NULL ('a'), ROW_GROUP_SIZE 2048)
+----
+NOT_NULL column "a" contains a NULL
+
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/not_null_null_${order}.arrow')
+----
+0
+
+endloop
+
+statement ok
+RESET preserve_insertion_order
